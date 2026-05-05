@@ -15,7 +15,7 @@ This project implements a Person Re-Identification (ReID) evaluation framework u
 - Dependencies: `openai`, `langchain-openai`, `pillow`, `matplotlib` (optional)
 
 ```bash
-pip install openai langchain-openai pillow dashscope
+pip install openai langchain-openai pillow
 ```
 
 ## Usage

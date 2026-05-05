@@ -1,13 +1,13 @@
 import argparse
 import sys
 import os
+import yaml
 
 # Ensure src is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from data_loader import Market1501Dataset
-from reid_agent import MockReIDAgent, OpenAIReIDAgent, RandomReIDAgent, LangChainReIDAgent, QwenReIDAgent
-
+from reid_agent import MockReIDAgent, OpenAIReIDAgent, RandomReIDAgent, LangChainReIDAgent, EvolutionaryReIDAgent
 
 def generate_report(results, accuracy, agent_name, output_file="report.md"):
     with open(output_file, "w", encoding="utf-8") as f:
@@ -28,7 +28,7 @@ def generate_report(results, accuracy, agent_name, output_file="report.md"):
         f.write("- **Incorrect Cases**: Explain failures (e.g. occlusion, low resolution, similar distractors).\n")
         f.write("- **Recommendation**: Use higher resolution inputs or better prompt engineering for LMMs.\n")
 
-def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, api_key=None,base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",report_path="report.md"):
+def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, api_key=None, report_path="report.md", model="gpt-4o", base_url=None):
     print(f"Loading dataset from {data_dir}...")
     dataset = Market1501Dataset(data_dir)
     
@@ -38,20 +38,19 @@ def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, api_key
         if not api_key:
             print("Error: API Key needed for OpenAI agent.")
             return
-        agent = OpenAIReIDAgent(api_key=api_key,base_url=base_url)
+        agent = OpenAIReIDAgent(api_key=api_key, model=model, base_url=base_url)
     elif agent_name == "langchain":
         if not api_key:
             print("Error: API Key needed for LangChain agent.")
             return
-        agent = LangChainReIDAgent(api_key=api_key,base_url=base_url)
-    elif agent_name == "qwen":
-        if not api_key:
-            print("Error: API Key needed for Qwen agent.")
-            return
-        # 这里默认调用 qwen3.5-plus
-        agent = QwenReIDAgent(api_key=api_key,base_url=base_url)
+        agent = LangChainReIDAgent(api_key=api_key, model=model, base_url=base_url)
     elif agent_name == "random":
         agent = RandomReIDAgent()
+    elif agent_name == "evo":
+        if not api_key:
+            print("Error: API Key needed for Evolutionary agent.")
+            return
+        agent = EvolutionaryReIDAgent(api_key=api_key, model=model, base_url=base_url)
     else:
         print(f"Unknown agent: {agent_name}")
         return
@@ -68,7 +67,10 @@ def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, api_key
         
         # 2. Predict
         try:
-            pred_idx = agent.predict(query_path, gallery_paths)
+            if isinstance(agent, EvolutionaryReIDAgent):
+                pred_idx = agent.predict(query_path, gallery_paths, ground_truth_idx=ground_truth_idx)
+            else:
+                pred_idx = agent.predict(query_path, gallery_paths)
         except Exception as e:
             print(f"Prediction failed: {e}")
             pred_idx = -1
@@ -96,20 +98,42 @@ def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, api_key
     
     generate_report(results, accuracy, agent_name, report_path)
     print(f"Report saved to {report_path}")
+
+    # 对于进化代理，在任务结束时将总结写入长时记忆
+    if isinstance(agent, EvolutionaryReIDAgent):
+        summary = f"Session completed with {accuracy:.2%} accuracy. Total trials: {num_trials}."
+        agent.persistent_memory.summarize_to_long_term(summary)
+        print("Progress summarized to long-term memory.")
     
     return accuracy, results
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default=r"/mnt/l/CV/data/1/Market-1501-v15.09.15")
-    parser.add_argument("--agent", type=str, default="mock", 
-                        choices=["mock", "openai", "langchain", "random", "qwen"])
-    parser.add_argument("--trials", type=int, default=10)
-    parser.add_argument("--gallery_size", type=int, default=10)
-    parser.add_argument("--base_url",type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1")
-    parser.add_argument("--api_key", type=str, default="sk-1941059ddd9e496381a7fd1a72fd3666")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml")
+    parser.add_argument("--data_dir", type=str, default=None)
+    parser.add_argument("--agent", type=str, default=None, choices=["mock", "openai", "langchain", "random", "evo"])
+    parser.add_argument("--trials", type=int, default=None)
+    parser.add_argument("--gallery_size", type=int, default=None)
+    parser.add_argument("--api_key", type=str, default=None)
     parser.add_argument("--report", type=str, default="report.md")
     
     args = parser.parse_args()
-    
-    run_evaluation(args.agent, args.data_dir, args.trials, args.gallery_size, args.api_key,args.base_url, args.report)
+
+    # Load from YAML if exists
+    config = {}
+    if os.path.exists(args.config):
+        with open(args.config, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+
+    # CLI args override YAML config
+    agent = args.agent or config.get("agent", "mock")
+    data_dir = args.data_dir or config.get("data_dir", r"l:\CV\data\1\Market-1501-v15.09.15")
+    trials = args.trials or config.get("trials", 10)
+    gallery_size = args.gallery_size or config.get("gallery_size", 10)
+    api_key = args.api_key or config.get("api_key")
+    model = config.get("model", "gpt-4o")
+    base_url = config.get("base_url")
+    report_path = args.report # Usually specified via CLI or default
+
+    run_evaluation(agent, data_dir, trials, gallery_size, api_key, report_path, model=model, base_url=base_url)
+
