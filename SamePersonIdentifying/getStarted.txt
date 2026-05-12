@@ -1,0 +1,11 @@
+# 激活环境
+conda activate Reid
+
+# 启动服务
+CUDA_VISIBLE_DEVICES=6 python -m vllm.entrypoints.openai.api_server \
+    --model /data/llm/AI-ModelScope/R-4B \
+    --trust-remote-code \
+    --port 8000 \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.9 \
+    --enforce-eager
