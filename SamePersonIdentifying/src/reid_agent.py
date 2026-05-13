@@ -8,6 +8,7 @@ import time
 import re
 from functools import wraps
 from openai import OpenAI
+import textwrap
 
 
 def retry_on_exception(max_retries=3, delay=2):
@@ -193,20 +194,48 @@ class LocalReIDAgent:
         for idx, g_path in enumerate(gallery_paths):
             g_base64 = self._encode_image(g_path)
             
-            prompt_text = (
-                "You are an expert in Pedestrian Re-Identification (Person ReID) for video surveillance. "
-                "Your task is to determine if the pedestrian in the Query image and the Gallery Candidate image are the EXACT SAME person captured by different cameras.\n\n"
-                "CRITICAL RULES for ReID:\n"
-                "- IGNORE background environments, lighting changes, and pedestrian postures/actions (these naturally change across different cameras).\n"
-                "- IGNORE facial details (they are usually too low-resolution to be reliable).\n"
-                "- FOCUS strictly on viewpoint-invariant features: clothing (color, texture, patterns, length), accessories (backpacks, handbags, hats), footwear, and overall body proportion.\n\n"
-                "Please analyze step-by-step:\n"
-                "1. Query Features: Describe the clothing and accessories of the pedestrian in the Query image.\n"
-                "2. Gallery Features: Describe the clothing and accessories of the pedestrian in the Gallery image.\n"
-                "3. Comparison & Reasoning: Compare the two. Are the differences just due to camera angles/lighting, or do they clearly indicate different people?\n"
-                "4. Final decision: Are they the exact same person?\n\n"
-                "Format: Finish your analysis strictly with 'Match: True' or 'Match: False'"
-            )
+            prompt_text = textwrap.dedent("""\
+                # SYSTEM INSTRUCTION: CRITICAL OUTPUT CONSTRAINT
+                You are using a limited-token environment. Your internal thought process MUST be extremely brief. You MUST output the final [VERDICT] before reaching token limits, or you will fail the task. Keep reasoning to absolute minimum.
+                
+                You are a highly analytical AI vision expert specializing in Pedestrian Re-Identification (Person ReID). 
+                Your task is to determine if the Query image and the Gallery Candidate image contain the EXACT SAME person captured across different camera views.
+
+                CRITICAL RULES FOR REID TASK (STRICT ENFORCEMENT):
+                    1. ANTI-HALLUCINATION CONSTRAINT: NEVER invent visual features. If a Gallery image is heavily occluded, extremely blurry, completely cropped (e.g., showing only an arm), or lacks a visible human body, you MUST reject it immediately.
+                    2. HARD NEGATIVE REJECTION: Actively search for irreconcilable structural differences. Just ONE definitive mismatch (e.g., long vs. short hair, denim jeans vs. suit trousers, carrying a bag vs. empty hands) means they are NOT the same person, regardless of other similarities.
+                    3. FINE-GRAINED GRANULARITY: Do NOT use generic terms like "dark" or "light". Specify the exact color shade (e.g., navy blue, black, light grey) and infer the material/texture (e.g., stiff cloth, denim, soft cotton).
+                    4. VIEWPOINT INVARIANCE: Ignore background environments, lighting condition shifts, and pedestrian postures. Focus ONLY on identity-intrinsic attributes.
+
+                INSTRUCTIONS:
+                    You MUST format your analysis strictly using the steps below. Use extremely concise, bulleted notes (maximum 10 words per field) to avoid token truncation. Do NOT use long paragraphs or conversational filler (e.g., "Wait, let's check...").
+
+                    ### Step 0: Visibility & Validity Check
+                    - Query: [Is a full human figure clearly visible? Yes/No]
+                    - Gallery: [Is a full human figure clearly visible? Yes/No]
+                    *If Gallery is 'No', STOP all further analysis and immediately output [VERDICT]: MISMATCH.*
+
+                    ### Step 1: Head & Gender Presentation
+                    - Query Hair/Gender: [Short description]
+                    - Gallery Hair/Gender: [Short description]
+                    - Contradiction?: [Yes/No]
+
+                    ### Step 2: Upper Body Features
+                    - Query Upper: [Color, exact sleeve length, visible logos/patterns]
+                    - Gallery Upper: [Color, exact sleeve length, visible logos/patterns]
+                    - Contradiction?: [Yes/No]
+
+                    ### Step 3: Lower Body & Carried Objects
+                    - Query Lower: [Exact color, inferred material (e.g. denim), length]
+                    - Gallery Lower: [Exact color, inferred material (e.g. denim), length]
+                    - Carried/Accessories: [Query items vs. Gallery items. Explicitly state 'None' if empty hands]
+                    - Contradiction?: [Yes/No]
+
+                    ### Step 4: Final Verdict
+                    Reasoning: [Provide exactly ONE concise sentence stating the strongest reason for match or mismatch based on the contradictions found above]
+                    [VERDICT]: MATCH  (or)  [VERDICT]: MISMATCH
+            """)
+            
             content = [
                 {"type": "text", "text": prompt_text},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{query_base64}"}},
@@ -218,18 +247,28 @@ class LocalReIDAgent:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": content}],
-                    max_tokens=512, 
+                    max_tokens=4096, 
                     temperature=0.0
                 )
                 
                 res_content = response.choices[0].message.content.strip()
-                
-                match_result = re.search(r'Match:\s*(True|False)', res_content, re.IGNORECASE)
-                is_match = False
+
+                # 匹配最终格式 [VERDICT]: MATCH 或 [VERDICT]: MISMATCH
+                # 在 MATCH|MISMATCH 外面加上 \[? 和 \]?，表示括号可有可无
+                match_result = re.search(r'\[VERDICT\]:\s*\[?(MATCH|MISMATCH)\]?', res_content, re.IGNORECASE)
+
                 if match_result:
-                    is_match = (match_result.group(1).lower() == 'true')
-                
-                matches.append(is_match)
+                    verdict_str = match_result.group(1).upper()
+                    is_match = (verdict_str == 'MATCH')
+                    status_text = "✅ 匹配 (True)" if is_match else "❌ 不匹配 (False)"
+                    matches.append(is_match)
+                else:
+                # 拦截 Token 截断或未按格式输出的情况
+                    print(f"⚠️ 解析异常 (Parse Error): 疑似 Token 截断或格式丢失。输出结尾为: {res_content[-50:]}")
+                    is_match = None 
+                    status_text = "⚠️ 解析异常 (Parse Error)"
+                    matches.append(None)
+
                 analyses.append(res_content)
 
                 formatted_analysis = res_content.replace('\n', '<br>')
