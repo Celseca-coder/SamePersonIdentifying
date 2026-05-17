@@ -2,3 +2,35 @@ dataset/
 .png
 test_result/
 __pycache__/
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# Data and Dataset
+data/
+*.mat
+*.jpg
+*.png
+
+# API Keys and Config
+# config.yaml  # Uncomment if you want to keep your API keys private
+
+# Logs and Reports
+*.log
+report.md
+
+# Memory and persistent state
+memory/*.json
+
+# VS Code
+.vscode/
