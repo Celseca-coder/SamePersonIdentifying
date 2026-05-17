@@ -39,51 +39,41 @@ class Market1501Dataset:
         camid = parts[1]
         return pid, camid
 
-    def get_test_case(self, gallery_size=10, mode="random"):
+    def get_test_case(self, gallery_size=10, mode="random", max_positives=5):
         """
-        Returns a single test case:
-        - query_path: str
-        - gallery_paths: List[str] (contains at least one match)
-        - ground_truth_idx: int (index of the match in gallery_paths)
+        升级版 DataLoader：
+        支持在一个 Gallery 中随机混入 1 到 max_positives 个相同的目标人物。
+        返回的 ground_truth_indices 现在是一个列表 (List[int])！
         """
-        # 1. Pick a random query
+        # 1. 挑选 Query
         query_path = random.choice(self.query_paths)
         q_pid, q_camid = self._parse_filename(query_path)
         
-        # 2. Find positives in gallery
+        # 2. 划分正负样本池
         gallery_full = [(p, *self._parse_filename(p)) for p in self.gallery_paths]
-        
-        # Standard ReID protocol: match is same ID, different camera usually.
-        # But Market-1501 might allow same camera if time is different? 
-        # For simplicity in this LMM demo strict protocol:
-        # positive: same pid, different camid? Or just same pid?
-        # Market-1501 evaluation usually ignores "junk" (same ID, same camera). 
-        # But here we just want to find "same person". LMMs might be good at strict matches too.
-        # Let's simple filter: same pid is positive.
-        
         positives = [p for (p, pid, cam) in gallery_full if pid == q_pid]
         negatives = [p for (p, pid, cam) in gallery_full if pid != q_pid]
         
         if not positives:
-            # Retry if no match found for this query (should differ rarely)
             return self.get_test_case(gallery_size, mode)
             
-        # 3. Sample
-        # Ensure we have at least one positive
-        target_positive = random.choice(positives)
+        # =================【核心修改区】=================
+        # 决定这次放入几个正确的候选人（例如随机放 1 到 3 个，但不能超过图库总大小）
+        num_pos = random.randint(1, min(len(positives), max_positives, gallery_size))
         
-        # Fill rest with negatives
-        num_negatives = gallery_size - 1
+        # 抽取多个正样本
+        target_positives = random.sample(positives, num_pos)
+        
+        # 剩下的坑位用负样本填满
+        num_negatives = gallery_size - num_pos
         curr_negatives = random.sample(negatives, min(len(negatives), num_negatives))
         
-        # Combine
-        gallery_subset = [target_positive] + curr_negatives
+        # 合并并打乱
+        gallery_subset = target_positives + curr_negatives
         random.shuffle(gallery_subset)
         
-        # Find index
-        gt_idx = gallery_subset.index(target_positive)
+        # 找出所有正样本在打乱后的索引位置，返回一个列表！
+        gt_indices = [i for i, path in enumerate(gallery_subset) if path in target_positives]
+        # ===============================================
         
-        # Check if there are accidental other positives in the negatives selection (unlikely if sampled from strict negatives)
-        # But if we just sampled from 'all', we'd need to check. here we sampled from 'negatives', so pid is diff.
-        
-        return query_path, gallery_subset, gt_idx
+        return query_path, gallery_subset, gt_indices

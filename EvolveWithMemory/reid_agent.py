@@ -9,6 +9,7 @@ import re
 import math
 from functools import wraps
 from memory_module import ReIDMemoryModule
+import textwrap
 
 # --- AIDEML Inspired MCTS & Memory Components ---
 
@@ -268,77 +269,228 @@ class QwenReIDAgent(BaseReIDAgent):
             # Raise exception to trigger retry
             raise Exception(f"Qwen API Error: {response.code} - {response.message}")
 
-class EvolutionaryReIDAgent(BaseReIDAgent):
-    """
-    Advanced ReID Agent implementing AIDEML-inspired:
-    - MCTS (Monte Carlo Tree Search) for prompt selection
-    - Fireworks Policy for 'exploding' (variation) best prompts
-    - Memory Management for guidance
-    """
-    def __init__(self, api_key, model="gpt-4o", base_url=None):
-        self.journal = Journal()
-        self.memory = MemoryManager()
-        self.persistent_memory = ReIDMemoryModule()
-        self.api_key = api_key
+class LocalReIDAgent(BaseReIDAgent):
+    def __init__(self, api_key="local-test", model="/data/llm/AI-ModelScope/R-4B", base_url="http://localhost:8000/v1"):
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
-        self.base_agent = OpenAIReIDAgent(api_key, model, base_url)
-        
-        # Initial seed prompt
-        initial_prompt = """Analyze clothing features (upper/lower/shoes) and match the Query to one Gallery index."""
-        self.journal.add_node(initial_prompt)
+        self.log_file = "reid_inference_log.md"
+        print(f"🚀 vLLM API (Predictor) Rank-1 模式已激活。")
 
-    def _get_evolved_prompt(self, base_node):
-        """Fireworks/Explosion: Generate variations of the best prompt using the LLM itself or simple logic"""
-        # 获取持久化记忆的压缩上下文
-        memory_context = self.persistent_memory.get_compressed_context()
-        guidance = self.memory.get_contextual_guidance()
+    def _encode_image(self, image_path):
+        img = Image.open(image_path)
+        img = img.resize((224, 448), Image.Resampling.LANCZOS)
+        buffered = io.BytesIO()
+        img.save(buffered, format="JPEG")
+        return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    def predict(self, query_path, gallery_paths, guidance="无"):
+        query_base64 = self._encode_image(query_path)
+        matches = []   
+        analyses = [] # 保存列表，防止截断
+
+        for idx, g_path in enumerate(gallery_paths):
+            g_base64 = self._encode_image(g_path)
+            
+            prompt_text = textwrap.dedent(f"""\
+                # SYSTEM INSTRUCTION: CRITICAL OUTPUT CONSTRAINT
+                
+                【🚨来自过去的深刻教训 (GUIDANCE)🚨】: 
+                {guidance}
+                请你务必在本次分析中严格遵守上述教训！
+                
+                You are an AI vision expert specializing in Pedestrian Re-Identification.
+                Task: Determine if the Query image and the Gallery Candidate contain the EXACT SAME person.
+
+                RULES:
+                    1. NO HALLUCINATION.
+                    2. HARD NEGATIVE REJECTION: Actively search for irreconcilable differences.
+                    3. FINE-GRAINED: Specify exact colors and materials.
+
+                INSTRUCTIONS:
+                    ### Step 0: Visibility Check
+                    ### Step 1: Head & Gender
+                    ### Step 2: Upper Body
+                    ### Step 3: Lower Body & Carried Objects
+                    ### Step 4: Final Verdict
+                    Reasoning: [One concise sentence]
+                    [VERDICT]: MATCH  (or)  [VERDICT]: MISMATCH
+            """)
+            
+            content = [
+                {"type": "text", "text": prompt_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{query_base64}"}},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{g_base64}"}}
+            ]
+
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": content}],
+                    max_tokens=512, 
+                    temperature=0.1 
+                )
+                res_content = response.choices[0].message.content.strip()
+                match_result = re.search(r'\[VERDICT\]:\s*\[?(MATCH|MISMATCH)\]?', res_content, re.IGNORECASE)
+
+                if match_result:
+                    is_match = (match_result.group(1).upper() == 'MATCH')
+                    matches.append(is_match)
+                else:
+                    matches.append(False)
+                    
+                analyses.append(res_content)
+
+            except Exception as e:
+                matches.append(False)
+                analyses.append(f"Error: {str(e)}")
+
+        # 核心：Rank-1 评测只取第一个判定为 True 的索引
+        predicted_idx = matches.index(True) if True in matches else -1
         
-        # 模拟根据记忆进化的 Prompt
-        variations = [
-            f"{base_node.prompt} (Context: {memory_context}) | Strategy: Focus on tiny unique textures.",
-            f"{base_node.prompt} (Context: {memory_context}) | Strategy: Pay attention to bag shapes/straps.",
-            f"{base_node.prompt} (Context: {memory_context}) | Strategy: Cross-check footwear color and type."
+        return predicted_idx, analyses
+
+class EvolutionaryReIDAgent(BaseReIDAgent):
+    def __init__(self, api_key="local-test", model="/data/llm/AI-ModelScope/R-4B", base_url="http://localhost:8000/v1"):
+        self.persistent_memory = ReIDMemoryModule()
+        self.active_guidance_list = [] 
+        self.base_agent = LocalReIDAgent(api_key, model, base_url)
+    
+    def _get_current_guidance(self):
+        if not self.active_guidance_list:
+            return "目前还没有经验，请自由发挥。"
+        return "\n".join([f"- {g}" for g in self.active_guidance_list[-3:]])
+
+    def visual_reflect_wrong_match(self, query_path, wrong_path, correct_path, wrong_reason, correct_reason):
+        """场景1：认错人（False Positive）的反思"""
+        print("\n[Reflector] 🔍 触发多模态视觉针对wrong_match反思机制...")
+        query_b64 = self.base_agent._encode_image(query_path)
+        wrong_b64 = self.base_agent._encode_image(wrong_path)
+        correct_b64 = self.base_agent._encode_image(correct_path)
+        
+        prompt = textwrap.dedent(f"""\
+            你是一个严厉且资深的刑侦视觉督导专家。你的下属（Predictor）在行人重识别时认错人了！
+            
+            【下属当时的案发推理录音】：
+            1. 他把 图片2(无关路人) 错认成目标的理由是：
+            {wrong_reason}
+            
+            2. 他把 图片3(真正的目标) 排除的理由是：
+            {correct_reason}
+            
+            【你的复盘任务】：
+            图片1是目标人物(Query)。图片2是错认的路人(Wrong)。图片3是真正的目标(Correct)。
+            请狠狠地批判下属的推理过程！指出他被图片2的什么伪装特征骗了？又为什么忽略了图片3的核心特征？
+            最后，请总结出一条强硬、简短的【视觉排查铁律】。必须以 `[GUIDANCE]:` 开头输出。
+        """)
+        
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{query_b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{wrong_b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{correct_b64}"}}
         ]
-        return random.choice(variations)
-
-    def _select_node(self):
-        """MCTS selection based on UCT"""
-        if not self.journal.nodes:
-            return None
-        # Basic UCT selection among processed nodes
-        best_node = max(self.journal.nodes, key=lambda n: n.uct_score())
-        return best_node
+        
+        try:
+            response = self.base_agent.client.chat.completions.create(
+                model=self.base_agent.model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=512,
+                temperature=0.6 # Reflector需要一点发散性和批判性
+            )
+            res_content = response.choices[0].message.content.strip()
+            print(f"\n[Reflector] 导师痛骂:\n{res_content}\n")
+            
+            # 提取 GUIDANCE
+            match = re.search(r'\[GUIDANCE\]:\s*(.*)', res_content, re.IGNORECASE)
+            guidance = match.group(1) if match else "交叉核对细节，严禁仅凭单一部位颜色下定论！"
+            return guidance
+            
+        except Exception as e:
+            print(f"[Reflector] 反思器宕机: {e}")
+            return "仔细检查所有配件，拒绝视觉幻觉！"
+        
+    def visual_reflect_miss_hit(self, query_path, correct_path, missed_reason):
+        """场景2：没认出来/漏认（False Negative）的反思"""
+        print("\n[Reflector] 🔍 触发【漏认(Miss)】反思机制...")
+        query_b64 = self.base_agent._encode_image(query_path)
+        correct_b64 = self.base_agent._encode_image(correct_path)
+        
+        prompt = textwrap.dedent(f"""\
+            你是一个严厉的刑侦视觉督导专家。你的下属（Predictor）犯了一个“漏网之鱼”的错误，判定目标为【不匹配】。
+            
+            【下属排查真实目标时的错误推理录音】：
+            {missed_reason}
+            
+            【你的复盘任务】：
+            图片1 是目标人物 (Query)。图片2 是真实目标 (Correct Match)。这绝对是同一个人！
+            请批判下属的推理：他是不是对某个特征的要求太苛刻了？（比如光线偏色、姿态变化、小面积遮挡）
+            请总结出一条强硬的【视觉排查铁律】，指导他学会透过视觉干扰抓本质。必须以 `[GUIDANCE]:` 开头输出。
+        """)
+        
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{query_b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{correct_b64}"}}
+        ]
+        
+        try:
+            response = self.base_agent.client.chat.completions.create(
+                model=self.base_agent.model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=512,
+                temperature=0.6 # Reflector需要一点发散性和批判性
+            )
+            res_content = response.choices[0].message.content.strip()
+            print(f"\n[Reflector] 导师痛骂:\n{res_content}\n")
+            
+            # 提取 GUIDANCE
+            match = re.search(r'\[GUIDANCE\]:\s*(.*)', res_content, re.IGNORECASE)
+            guidance = match.group(1) if match else "交叉核对细节，严禁仅凭单一部位颜色下定论！"
+            return guidance
+            
+        except Exception as e:
+            print(f"[Reflector] 反思器宕机: {e}")
+            return "仔细检查所有配件，拒绝视觉幻觉！"
 
     def predict(self, query_path, gallery_paths, ground_truth_idx=None):
-        # 1. Selection (MCTS)
-        parent_node = self._select_node()
+        current_guidance = self._get_current_guidance()
+        print(f"\n[Predictor] 正在执行单目标 Rank-1 识别...")
         
-        # 2. Expansion/Variation (Fireworks 'Explosion')
-        if parent_node and parent_node.visits > 0:
-            new_prompt = self._get_evolved_prompt(parent_node)
-            current_node = self.journal.add_node(new_prompt, parent=parent_node)
-        else:
-            current_node = parent_node
-
-        # 3. Simulation (Execution)
-        # Use child agent prediction
-        prediction = self.base_agent.predict(query_path, gallery_paths)
+        # 此时 pred_idx 是一个整数 (例如 3，或 -1)
+        pred_idx, analyses_list = self.base_agent.predict(query_path, gallery_paths, guidance=current_guidance)
         
-        # 4. Backpropagation & Memory Update
         if ground_truth_idx is not None:
-            is_correct = (prediction == ground_truth_idx)
-            reward = 1.0 if is_correct else 0.0
-            if current_node:
-                self.journal.update_mcts(current_node, reward)
+            is_correct = (pred_idx == ground_truth_idx)
+
+            if not is_correct:
+                new_guidance = None
+                if pred_idx != -1:
+                    # 【认错人】：它选了别人，触发三图对比！
+                    wrong_path = gallery_paths[pred_idx]
+                    correct_path = gallery_paths[ground_truth_idx]
+                    wrong_reason = analyses_list[pred_idx]
+                    correct_reason = analyses_list[ground_truth_idx]
+                    
+                    print("\n[Reflector] 检测到错认(FP)，触发排雷反思...")
+                    new_guidance = self.visual_reflect_wrong_match(
+                        query_path, wrong_path, correct_path, wrong_reason, correct_reason
+                    )
+                else:
+                    # 【没认出】：它输出了 -1 (全盘否定)，触发两图对比！
+                    correct_path = gallery_paths[ground_truth_idx]
+                    missed_reason = analyses_list[ground_truth_idx]
+                    
+                    print("\n[Reflector] 检测到漏认(FN)，触发召回反思...")
+                    new_guidance = self.visual_reflect_miss_hit(
+                        query_path, correct_path, missed_reason
+                    )
+                
+                if new_guidance:
+                    print(f"✨ [Memory] 习得新规矩: {new_guidance}")
+                    self.active_guidance_list.append(new_guidance)
             
-            # 同时更新运行时内存和磁盘持久化内存
-            self.memory.add_experience(current_node.prompt if current_node else "Initial", prediction, ground_truth_idx)
+            # 记录日志
+            log_analysis = f"Pred: {pred_idx}, GT: {ground_truth_idx}"
+            self.persistent_memory.add_trial(prompt=current_guidance, is_correct=is_correct, analysis=log_analysis)
             
-            # 记录到短时记忆文件
-            self.persistent_memory.add_trial(
-                prompt=current_node.prompt if current_node else "Initial", 
-                is_correct=is_correct,
-                analysis=f"Pred: {prediction}, GT: {ground_truth_idx}"
-            )
-            
-        return prediction
+        return pred_idx
