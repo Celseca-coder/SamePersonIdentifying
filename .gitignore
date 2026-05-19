@@ -34,3 +34,8 @@ memory/*.json
 
 # VS Code
 .vscode/
+
+*.md
+log/
+images/
+*.txt

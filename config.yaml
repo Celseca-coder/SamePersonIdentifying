@@ -1,8 +1,10 @@
 # ReID Evaluation Configuration
-api_key: sk-1941059ddd9e496381a7fd1a72fd3666
-trials: 10
-agent: "evo"
-gallery_size: 500
-data_dir: "/mnt/l/CV/data/1/Market-1501-v15.09.15"
-model: "qwen3.6-plus"
-base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key: "EMPTY"   # 本地 vLLM 不需要真实的 API Key
+trials: 50      # 测试的轮数
+agent: "tournament-local"  # 使用本地部署模型
+gallery_size: 10
+query_size: 3
+max_positives: 1 # 每个查询最多有多少个正样本（同一身份的图片），设置为 1 for rank-1 评测
+data_dir: "/home/user/GSK/heyalan/Reid/data/Market-1501-v15.09.15" # 数据集路径
+model: "/data/llm/AI-ModelScope/R-4B"           # 必须与启动 vLLM 时指定的模型路径/名称完全一致
+base_url: "http://localhost:8000/v1"            # 您本地 vLLM 服务的 OpenAI 兼容接口地址
