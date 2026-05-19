@@ -342,3 +342,86 @@ class EvolutionaryReIDAgent(BaseReIDAgent):
             )
             
         return prediction
+
+class LangChainBatchImageRetrievalManager:
+    """
+    利用 Langchain 封装好的图像检索与向量数据库能力，支持对大量图像数据进行自动化、成批处理。
+    适用场景：对庞大的 Gallery 图库进行离线向量化并建立索引，然后对大批量的 Query 实现自动化检索。
+    注意：此部分依赖本地检索多模态能力，需安装 langchain-experimental, open_clip_torch, chromadb 等库。
+    """
+    def __init__(self, persist_directory="./langchain_reid_db"):
+        try:
+            from langchain_experimental.open_clip import OpenCLIPEmbeddings
+            from langchain_chroma import Chroma
+            
+            # 初始化多模态嵌入模型 (如 CLIP) 进行图像特征提取
+            self.embedding_model = OpenCLIPEmbeddings(model_name="ViT-B-32", checkpoint="laion2b_s34b_b79k")
+            
+            # 使用 Langchain 的 Chroma 构建本地向量库进行图像检索
+            self.vectorstore = Chroma(
+                collection_name="reid_gallery",
+                embedding_function=self.embedding_model,
+                persist_directory=persist_directory
+            )
+        except ImportError:
+            print("请先安装对应依赖项: pip install langchain-experimental open_clip_torch chromadb torch")
+            self.vectorstore = None
+            self.embedding_model = None
+
+    def build_gallery_batch(self, gallery_paths, batch_size=32):
+        if not self.vectorstore:
+            return
+
+        print(f"Starting batch processing for {len(gallery_paths)} gallery images...")
+        total_batches = (len(gallery_paths) + batch_size - 1) // batch_size
+        
+        for i in range(0, len(gallery_paths), batch_size):
+            batch_paths = gallery_paths[i:i + batch_size]
+            try:
+                # 手动传入 metadatas，把路径存进去
+                metadatas = [{"source": p} for p in batch_paths]
+                self.vectorstore.add_images(uris=batch_paths, metadatas=metadatas)
+                print(f"Successfully indexed batch {i//batch_size + 1}/{total_batches}")
+            except Exception as e:
+                print(f"Error indexing batch {i//batch_size + 1}: {e}")
+
+    def automate_batch_query(self, query_paths, k=5):
+        """
+        利用构建好的向量数据库，自动化对一批 Query 进行图像检索操作，返回 Top-K 最相近的图像路径。
+        """
+        if not self.vectorstore:
+            return []
+
+        results = []
+        print(f"Automating batch retrieval for {len(query_paths)} queries...")
+        for idx, q_path in enumerate(query_paths):
+            try:
+                # 提取 Query 的图像特征进行相似度检索 (Similarity Search by Vector)
+                q_emb = self.embedding_model.embed_image([q_path])[0]
+                matched_docs = self.vectorstore.similarity_search_by_vector(q_emb, k=k)
+                
+                # 读取 metadata 中的来源路径
+                matched_uris = [doc.metadata.get("source", "Unknown") for doc in matched_docs]
+                results.append({"query": q_path, "top_k_matches": matched_uris})
+                
+                if (idx + 1) % 10 == 0:
+                    print(f"Processed {idx + 1} queries...")
+            except Exception as e:
+                print(f"Error querying image {q_path}: {e}")
+                results.append({"query": q_path, "error": str(e)})
+                
+        return results
+
+    def process_with_llm_batch(self, llm_chain, batch_inputs):
+        """
+        利用 Langchain 原生的 .batch() 并发接口，自动化并行处理 LLM 任务 (例如批量重识别推理)，
+        极大提升大规模数据下的调用效率。
+        """
+        print(f"Sending batch of {len(batch_inputs)} tasks to LLM...")
+        try:
+            # concurrency 可以配置最大并发数
+            responses = llm_chain.batch(batch_inputs, config={"max_concurrency": 5})
+            return responses
+        except Exception as e:
+            print(f"LLM Batch execution failed: {e}")
+            return []
