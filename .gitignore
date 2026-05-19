@@ -11,6 +11,7 @@ Thumbs.db
 venv/
 .venv/
 env/
+src/config.yaml
 
 # Data and Dataset
 data/
