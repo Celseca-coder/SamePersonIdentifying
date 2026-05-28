@@ -8,7 +8,7 @@ import time
 import re
 import math
 from functools import wraps
-from memory_module import ReIDMemoryModule
+from memory_plugin import MemoryPlugin
 
 # --- AIDEML Inspired MCTS & Memory Components ---
 
@@ -286,11 +286,12 @@ class EvolutionaryReIDAgent(BaseReIDAgent):
     - Fireworks Policy for 'exploding' (variation) best prompts
     - Memory Management for guidance
     """
-    def __init__(self, api_key, model="gpt-4o", base_url=None, backend="openai"):
+    def __init__(self, api_key, model="gpt-4o", base_url=None, backend="openai", use_memory=True):
         self.journal = Journal()
         self.memory = MemoryManager()
-        # 显式传入本文件所在目录，确保记忆始终写入 src/memory/
-        self.persistent_memory = ReIDMemoryModule(
+        # 热插拔记忆模块：use_memory=False 时所有调用均为 no-op
+        self.persistent_memory = MemoryPlugin(
+            enabled=use_memory,
             workspace_path=os.path.dirname(os.path.abspath(__file__))
         )
         self.api_key = api_key

@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from reid_agent import LangChainBatchImageRetrievalManager
 from data_loader import Market1501Dataset
+from memory_plugin import MemoryPlugin
 
 
 # ---------------------------------------------------------------------------
@@ -201,9 +202,12 @@ def main():
             config = yaml.safe_load(f) or {}
 
     data_dir     = config.get("data_dir", "/mnt/l/CV/data/1/Market-1501-v15.09.15")
-    gallery_size = config.get("gallery_size", 500)
+    gallery_size = config.get("gallery_size", 100)
     query_size   = config.get("query_size", 5)
-    num_trials   = args.trials or config.get("batch_trials", 50)
+    num_trials   = args.trials or config.get("batch_trials", 15)
+
+    # 热插拔记忆模块：config 中 use_memory: false 时全部 no-op
+    mem = MemoryPlugin.from_config(config)
 
     config_snapshot = {
         "data_dir": data_dir,
@@ -259,6 +263,13 @@ def main():
         hits = f"R1={result['rank1_hits']}/{result['total_queries']}"
         print(f"Rank-1: {r1:>4}  Rank-3: {r3:>4}  ({hits})")
 
+        # 记录每次 trial 到短时记忆
+        mem.add_trial(
+            prompt="LangChain CLIP",
+            is_correct=result["rank1_hits"] > 0,
+            analysis=f"PID={pid}, R1={result['rank1_hits']}/{result['total_queries']}, R3={result['rank3_hits']}/{result['total_queries']}"
+        )
+
     elapsed = time.time() - t_start
 
     # 最终汇总
@@ -277,6 +288,11 @@ def main():
     print(f"   Avg Rank-3: {avg_r3:.2%}")
     print(f"   Time      : {elapsed:.1f}s  (~{elapsed/completed:.1f}s/trial)")
     print("=" * 50)
+
+    # session 结束后将汇总写入长时记忆
+    mem.summarize_to_long_term(
+        f"Batch [LangChain CLIP, {completed} trials] Avg R1={avg_r1:.2%} R3={avg_r3:.2%}"
+    )
 
     generate_report(trial_results, config_snapshot, elapsed, args.report)
 

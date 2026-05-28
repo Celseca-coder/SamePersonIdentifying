@@ -1,0 +1,7 @@
+{
+    "global_experiences": [
+        "Batch [LangChain CLIP, 15 trials] Avg R1=31.78% R3=37.44%"
+    ],
+    "high_level_wisdom": "",
+    "best_prompts": []
+}

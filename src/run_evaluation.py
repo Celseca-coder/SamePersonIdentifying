@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from data_loader import Market1501Dataset
 from reid_agent import MockReIDAgent, OpenAIReIDAgent, RandomReIDAgent, LangChainReIDAgent, EvolutionaryReIDAgent
-from memory_module import ReIDMemoryModule
+from memory_plugin import MemoryPlugin
 
 def generate_report(results, accuracy, agent_name, output_file="report.md"):
     with open(output_file, "w", encoding="utf-8") as f:
@@ -29,7 +29,7 @@ def generate_report(results, accuracy, agent_name, output_file="report.md"):
         f.write("- **Incorrect Cases**: Explain failures (e.g. occlusion, low resolution, similar distractors).\n")
         f.write("- **Recommendation**: Use higher resolution inputs or better prompt engineering for LMMs.\n")
 
-def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, query_size=1, api_key=None, report_path="report.md", model="gpt-4o", base_url=None):
+def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, query_size=1, api_key=None, report_path="report.md", model="gpt-4o", base_url=None, use_memory=True):
     print(f"Loading dataset from {data_dir}...")
     dataset = Market1501Dataset(data_dir)
     
@@ -52,7 +52,7 @@ def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, query_s
             print("Error: API Key needed for Evolutionary agent.")
             return
         # You can now specify backend="langchain" to use LangChain inside EVO
-        agent = EvolutionaryReIDAgent(api_key=api_key, model=model, base_url=base_url, backend="langchain")
+        agent = EvolutionaryReIDAgent(api_key=api_key, model=model, base_url=base_url, backend="langchain", use_memory=use_memory)
     else:
         print(f"Unknown agent: {agent_name}")
         return
@@ -61,11 +61,11 @@ def run_evaluation(agent_name, data_dir, num_trials=10, gallery_size=10, query_s
     print(f"Trials: {num_trials}, Gallery Size: {gallery_size}, Query Size: {query_size}")
 
     # 无论使用何种 agent，都通过统一的 persistent_memory 记录记忆。
-    # evo agent 已内置 persistent_memory，其他 agent 在此处创建。
+    # evo agent 已内置（热插拔）persistent_memory，其他 agent 在此处创建。
     if isinstance(agent, EvolutionaryReIDAgent):
         persistent_memory = agent.persistent_memory
     else:
-        persistent_memory = ReIDMemoryModule()
+        persistent_memory = MemoryPlugin(enabled=use_memory)
 
     correct_count = 0
     results = []
@@ -153,7 +153,8 @@ if __name__ == "__main__":
     api_key = args.api_key or config.get("api_key")
     model = config.get("model", "gpt-4o")
     base_url = config.get("base_url")
+    use_memory = config.get("use_memory", True)
     report_path = args.report # Usually specified via CLI or default
 
-    run_evaluation(agent, data_dir, trials, gallery_size, query_size, api_key, report_path, model=model, base_url=base_url)
+    run_evaluation(agent, data_dir, trials, gallery_size, query_size, api_key, report_path, model=model, base_url=base_url, use_memory=use_memory)
 

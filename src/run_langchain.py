@@ -7,6 +7,7 @@ sys.path.append(os.path.abspath("./src"))
 
 from reid_agent import LangChainBatchImageRetrievalManager
 from data_loader import Market1501Dataset
+from memory_plugin import MemoryPlugin
 
 import yaml
 
@@ -21,6 +22,9 @@ def main():
     data_dir = config.get("data_dir", "/mnt/l/CV/data/1/Market-1501-v15.09.15")
     gallery_size = config.get("gallery_size", 100)
     query_size = config.get("query_size", 1)
+
+    # 热插拔记忆模块
+    mem = MemoryPlugin.from_config(config)
 
     # 1. 实例化我们的 LangChain 检索管理器
     # 会在当前目录下创建一个叫做 "langchain_reid_db" 的文件夹用于持久化数据库
@@ -81,12 +85,25 @@ def main():
         if hit_rank1: correct_rank1 += 1
         if hit_rank3: correct_rank3 += 1
 
+        # 记录本次 query 到短时记忆
+        mem.add_trial(
+            prompt="LangChain CLIP",
+            is_correct=hit_rank1,
+            analysis=f"QueryPID={query_pid}, R1={'hit' if hit_rank1 else 'miss'}, R3={'hit' if hit_rank3 else 'miss'}"
+        )
+
     print("\n" + "="*30)
     print(f"🚀 评测结果统计 (检索模式: LangChain CLIP Vector DB)")
     print(f"Total Queries: {total_queries}")
     if total_queries > 0:
-        print(f"Rank-1 Accuracy: {correct_rank1 / total_queries:.2%}")
-        print(f"Rank-3 Accuracy: {correct_rank3 / total_queries:.2%}")
+        r1 = correct_rank1 / total_queries
+        r3 = correct_rank3 / total_queries
+        print(f"Rank-1 Accuracy: {r1:.2%}")
+        print(f"Rank-3 Accuracy: {r3:.2%}")
+        # session 结束后将汇总写入长时记忆
+        mem.summarize_to_long_term(
+            f"Single run [LangChain CLIP, {total_queries} queries] R1={r1:.2%} R3={r3:.2%}"
+        )
     print("="*30)
 
 if __name__ == '__main__':

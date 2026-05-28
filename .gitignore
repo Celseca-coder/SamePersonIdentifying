@@ -1,32 +1,41 @@
-# Byte-compiled / optimized / DLL files
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
 
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Virtual Environments
+# ── Virtual Environments ──────────────────────────────────────────────────────
 venv/
 .venv/
 env/
 
-# Data and Dataset
+# ── Dataset & Large Binary Files ─────────────────────────────────────────────
+# 数据集图片和压缩包体积过大，不纳入版本管理
 data/
+*.zip
+*.tar.gz
 *.mat
-*.jpg
-*.png
 
-# API Keys and Config
-# config.yaml  # Uncomment if you want to keep your API keys private
+# ── Chroma Vector DB ──────────────────────────────────────────────────────────
+# 每次运行自动重建，无需追踪
+langchain_reid_db/
+**/langchain_reid_db/
 
-# Logs and Reports
-*.log
+# ── Memory / Persistent State ─────────────────────────────────────────────────
+# 运行时生成的记忆文件，不同环境下内容不同
+**/memory/*.json
+
+# ── Generated Reports ─────────────────────────────────────────────────────────
 report.md
+src/report.md
+batch_eval_report.md
+*.log
 
-# Memory and persistent state
-memory/*.json
-
-# VS Code
+# ── OS & Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
 .vscode/
+
+# ── API Keys ──────────────────────────────────────────────────────────────────
+# 如需将 config.yaml 纳入版本管理，请确认已删除其中的 api_key 字段
+# config.yaml

@@ -2,7 +2,9 @@
 api_key: sk-1941059ddd9e496381a7fd1a72fd3666
 trials: 10
 agent: "evo"
-gallery_size: 500
+gallery_size: 50
+query_size: 5
 data_dir: "/mnt/l/CV/data/1/Market-1501-v15.09.15"
 model: "qwen3.6-plus"
 base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+use_memory: true       # 设为 false 可完全禁用记忆持久化（所有脚本均生效）
