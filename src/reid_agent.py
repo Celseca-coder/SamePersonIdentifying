@@ -91,12 +91,12 @@ def retry_on_exception(max_retries=3, delay=2):
     return decorator
 
 class BaseReIDAgent:
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths):
         raise NotImplementedError
 
 class MockReIDAgent(BaseReIDAgent):
-    def predict(self, query_path, gallery_paths):
-        q_pid = int(os.path.basename(query_path).split('_')[0])
+    def predict(self, query_paths, gallery_paths):
+        q_pid = int(os.path.basename(query_paths[0]).split('_')[0])
         for i, path in enumerate(gallery_paths):
             g_pid = int(os.path.basename(path).split('_')[0])
             if g_pid == q_pid:
@@ -104,7 +104,7 @@ class MockReIDAgent(BaseReIDAgent):
         return 0
 
 class RandomReIDAgent(BaseReIDAgent):
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths):
         return random.randint(0, len(gallery_paths) - 1)
 
 class LangChainReIDAgent(BaseReIDAgent):
@@ -124,15 +124,18 @@ class LangChainReIDAgent(BaseReIDAgent):
             return base64.b64encode(f.read()).decode('utf-8')
 
     @retry_on_exception(max_retries=3, delay=3)
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths, custom_prompt=None):
         if not self.llm: return -1
         
-        base64_query = self._encode_image(query_path)
+        text_prompt = custom_prompt if custom_prompt else "Identify the person in Query Image(s) from Gallery. Return ONLY the index number."
         content = [
-            {"type": "text", "text": "Identify the person in Query Image from Gallery. Return ONLY the index number."}
+            {"type": "text", "text": text_prompt}
         ]
-        content.append({"type": "text", "text": "Query Image:"})
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}})
+        
+        for i, q_path in enumerate(query_paths):
+            base64_query = self._encode_image(q_path)
+            content.append({"type": "text", "text": f"Query Image {i}:"})
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}})
         
         for i, path in enumerate(gallery_paths):
             base64_img = self._encode_image(path)
@@ -161,10 +164,17 @@ class OpenAIReIDAgent(BaseReIDAgent):
             return base64.b64encode(f.read()).decode('utf-8')
 
     @retry_on_exception(max_retries=3, delay=3)
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths):
         if not self.client: return -1
 
-        base64_query = self._encode_image(query_path)
+        query_content = []
+        for i, q_path in enumerate(query_paths):
+            base64_query = self._encode_image(q_path)
+            query_content.extend([
+                {"type": "text", "text": f"Query Image {i}:"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}}
+            ])
+
         gallery_content = []
         for i, path in enumerate(gallery_paths):
             base64_img = self._encode_image(path)
@@ -187,11 +197,11 @@ Follow these steps strictly:
             {
                 "role": "user", 
                 "content": [
-                    {"type": "text", "text": "Query Image (Look for this person):"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}},
+                    {"type": "text", "text": "Query Image(s) (Look for this person):"},
+                    *query_content,
                     {"type": "text", "text": "Gallery Candidates:"},
                     *gallery_content,
-                    {"type": "text", "text": "Which index matches the Query Image? Think step by step."}
+                    {"type": "text", "text": "Which index matches the Query Image(s)? Think step by step."}
                 ]
             }
         ]
@@ -242,11 +252,12 @@ class QwenReIDAgent(BaseReIDAgent):
             dashscope.base_http_api_url = base_url
 
     @retry_on_exception(max_retries=3, delay=3)
-    def predict(self, query_path, gallery_paths):
-        content = [{"text": "Identify the person in Query Image from Gallery. Return ONLY the index number."}]
-        # Use file:// path for local images
-        content.append({"image": f"file://{os.path.abspath(query_path)}"})
-        content.append({"text": "Query Image is above. Gallery below:"})
+    def predict(self, query_paths, gallery_paths):
+        content = [{"text": "Identify the person in Query Image(s) from Gallery. Return ONLY the index number."}]
+        for i, q_path in enumerate(query_paths):
+            content.append({"text": f"Query Image {i}:"})
+            content.append({"image": f"file://{os.path.abspath(q_path)}"})
+        content.append({"text": "Query Image(s) are above. Gallery below:"})
 
         for i, path in enumerate(gallery_paths):
             content.append({"text": f"Index {i}:"})
@@ -275,13 +286,21 @@ class EvolutionaryReIDAgent(BaseReIDAgent):
     - Fireworks Policy for 'exploding' (variation) best prompts
     - Memory Management for guidance
     """
-    def __init__(self, api_key, model="gpt-4o", base_url=None):
+    def __init__(self, api_key, model="gpt-4o", base_url=None, backend="openai"):
         self.journal = Journal()
         self.memory = MemoryManager()
-        self.persistent_memory = ReIDMemoryModule()
+        # 显式传入本文件所在目录，确保记忆始终写入 src/memory/
+        self.persistent_memory = ReIDMemoryModule(
+            workspace_path=os.path.dirname(os.path.abspath(__file__))
+        )
         self.api_key = api_key
         self.model = model
-        self.base_agent = OpenAIReIDAgent(api_key, model, base_url)
+        
+        # 允许 Evo 选择 LangChain 或 OpenAI 作为底层调用框架
+        if backend == "langchain":
+            self.base_agent = LangChainReIDAgent(api_key, model, base_url)
+        else:
+            self.base_agent = OpenAIReIDAgent(api_key, model, base_url)
         
         # Initial seed prompt
         initial_prompt = """Analyze clothing features (upper/lower/shoes) and match the Query to one Gallery index."""
@@ -309,7 +328,7 @@ class EvolutionaryReIDAgent(BaseReIDAgent):
         best_node = max(self.journal.nodes, key=lambda n: n.uct_score())
         return best_node
 
-    def predict(self, query_path, gallery_paths, ground_truth_idx=None):
+    def predict(self, query_paths, gallery_paths, ground_truth_idx=None):
         # 1. Selection (MCTS)
         parent_node = self._select_node()
         
@@ -321,9 +340,16 @@ class EvolutionaryReIDAgent(BaseReIDAgent):
             current_node = parent_node
 
         # 3. Simulation (Execution)
-        # Use child agent prediction
-        prediction = self.base_agent.predict(query_path, gallery_paths)
+        # Use child agent prediction with the evolved prompt
+        eval_prompt = current_node.prompt if current_node else None
         
+        try:
+            # Check if base_agent supports custom_prompt (like LangChain)
+            prediction = self.base_agent.predict(query_paths, gallery_paths, custom_prompt=eval_prompt)
+        except TypeError:
+            # Fallback for Qwen or others that might not support it yet
+            prediction = self.base_agent.predict(query_paths, gallery_paths)
+            
         # 4. Backpropagation & Memory Update
         if ground_truth_idx is not None:
             is_correct = (prediction == ground_truth_idx)

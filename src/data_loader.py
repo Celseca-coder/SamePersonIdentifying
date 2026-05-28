@@ -39,16 +39,34 @@ class Market1501Dataset:
         camid = parts[1]
         return pid, camid
 
-    def get_test_case(self, gallery_size=10, mode="random"):
+    def get_test_case(self, gallery_size=10, query_size=1, mode="random"):
         """
         Returns a single test case:
-        - query_path: str
+        - query_paths: List[str] (list of queries of the same person)
         - gallery_paths: List[str] (contains at least one match)
         - ground_truth_idx: int (index of the match in gallery_paths)
         """
-        # 1. Pick a random query
-        query_path = random.choice(self.query_paths)
-        q_pid, q_camid = self._parse_filename(query_path)
+        # 1. Group queries by person ID to ensure we can select multiple queries of the same person
+        queries_full = [(p, *self._parse_filename(p)) for p in self.query_paths]
+        
+        from collections import defaultdict
+        pid_to_queries = defaultdict(list)
+        for p, pid, cam in queries_full:
+            if pid != -1:  # ignore invalid
+                pid_to_queries[pid].append(p)
+                
+        valid_pids = [pid for pid, paths in pid_to_queries.items() if len(paths) >= query_size]
+        
+        if not valid_pids:
+            max_avail = max(len(paths) for paths in pid_to_queries.values()) if pid_to_queries else 0
+            print(f"Warning: No ID has {query_size} queries. Falling back to an ID with {max_avail} queries.")
+            # fallback to the ones with max_avail
+            valid_pids = [pid for pid, paths in pid_to_queries.items() if len(paths) == max_avail]
+            query_size = max_avail
+            
+        q_pid = random.choice(valid_pids)
+        same_person_queries = pid_to_queries[q_pid]
+        query_subset = random.sample(same_person_queries, query_size)
         
         # 2. Find positives in gallery
         gallery_full = [(p, *self._parse_filename(p)) for p in self.gallery_paths]
@@ -66,7 +84,7 @@ class Market1501Dataset:
         
         if not positives:
             # Retry if no match found for this query (should differ rarely)
-            return self.get_test_case(gallery_size, mode)
+            return self.get_test_case(gallery_size, query_size, mode)
             
         # 3. Sample
         # Ensure we have at least one positive
@@ -83,7 +101,4 @@ class Market1501Dataset:
         # Find index
         gt_idx = gallery_subset.index(target_positive)
         
-        # Check if there are accidental other positives in the negatives selection (unlikely if sampled from strict negatives)
-        # But if we just sampled from 'all', we'd need to check. here we sampled from 'negatives', so pid is diff.
-        
-        return query_path, gallery_subset, gt_idx
+        return query_subset, gallery_subset, gt_idx
