@@ -33,9 +33,12 @@ class ReIDMemoryModule:
         })
         self._save_json(self.short_term_path, self.short_term)
 
-    def summarize_to_long_term(self, session_summary):
+    def summarize_to_long_term(self, session_summary, best_prompt=None):
         """将当前 Session 的总结存入长时记忆"""
-        self.long_term["global_experiences"].append(session_summary)
+        entry = {"summary": session_summary}
+        if best_prompt:
+            entry["best_prompt"] = best_prompt
+        self.long_term["global_experiences"].append(entry)
         # 简单维护长时记忆长度
         if len(self.long_term["global_experiences"]) > 10:
             self.long_term["global_experiences"].pop(0)

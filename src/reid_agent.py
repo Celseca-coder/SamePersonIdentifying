@@ -8,7 +8,7 @@ import time
 import re
 import math
 from functools import wraps
-from memory_module import ReIDMemoryModule
+from memory_plugin import MemoryPlugin
 
 # --- AIDEML Inspired MCTS & Memory Components ---
 
@@ -95,7 +95,9 @@ class BaseReIDAgent:
         raise NotImplementedError
 
 class MockReIDAgent(BaseReIDAgent):
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths):
+        # 兼容多查询，取第一个查询图片的 ID
+        query_path = query_paths[0] if isinstance(query_paths, list) else query_paths
         q_pid = int(os.path.basename(query_path).split('_')[0])
         for i, path in enumerate(gallery_paths):
             g_pid = int(os.path.basename(path).split('_')[0])
@@ -104,17 +106,25 @@ class MockReIDAgent(BaseReIDAgent):
         return 0
 
 class RandomReIDAgent(BaseReIDAgent):
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths):
         return random.randint(0, len(gallery_paths) - 1)
 
 class LangChainReIDAgent(BaseReIDAgent):
     def __init__(self, api_key, model="gpt-4o", base_url=None):
         self.api_key = api_key
         self.model = model
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
         try:
             from langchain_openai import ChatOpenAI
-            # 统一加入 base_url
-            self.llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url)
+            # 兼容多种版本的 api_key 参数名
+            self.llm = ChatOpenAI(
+                model=model, 
+                api_key=api_key, 
+                openai_api_key=api_key, 
+                base_url=base_url,
+                temperature=0.0
+            )
         except ImportError:
             print("Please install langchain-openai: pip install langchain-openai")
             self.llm = None
@@ -124,16 +134,23 @@ class LangChainReIDAgent(BaseReIDAgent):
             return base64.b64encode(f.read()).decode('utf-8')
 
     @retry_on_exception(max_retries=3, delay=3)
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths):
         if not self.llm: return -1
         
-        base64_query = self._encode_image(query_path)
+        # 兼容多查询
+        if not isinstance(query_paths, list):
+            query_paths = [query_paths]
+
         content = [
             {"type": "text", "text": "Identify the person in Query Image from Gallery. Return ONLY the index number."}
         ]
-        content.append({"type": "text", "text": "Query Image:"})
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}})
         
+        for i, q_path in enumerate(query_paths):
+            base64_query = self._encode_image(q_path)
+            content.append({"type": "text", "text": f"Query Image {i}:"})
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}})
+        
+        content.append({"type": "text", "text": "Gallery Candidates:"})
         for i, path in enumerate(gallery_paths):
             base64_img = self._encode_image(path)
             content.append({"type": "text", "text": f"Index {i}:"})
@@ -148,6 +165,8 @@ class OpenAIReIDAgent(BaseReIDAgent):
     def __init__(self, api_key, model="gpt-4o", base_url=None):
         self.api_key = api_key
         self.model = model
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
         try:
             from openai import OpenAI
             # 统一加入 base_url
@@ -161,10 +180,21 @@ class OpenAIReIDAgent(BaseReIDAgent):
             return base64.b64encode(f.read()).decode('utf-8')
 
     @retry_on_exception(max_retries=3, delay=3)
-    def predict(self, query_path, gallery_paths):
+    def predict(self, query_paths, gallery_paths):
         if not self.client: return -1
 
-        base64_query = self._encode_image(query_path)
+        # 兼容多查询
+        if not isinstance(query_paths, list):
+            query_paths = [query_paths]
+
+        query_content = []
+        for i, q_path in enumerate(query_paths):
+            base64_query = self._encode_image(q_path)
+            query_content.extend([
+                {"type": "text", "text": f"Query Image {i}:"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}}
+            ])
+
         gallery_content = []
         for i, path in enumerate(gallery_paths):
             base64_img = self._encode_image(path)
@@ -187,11 +217,11 @@ Follow these steps strictly:
             {
                 "role": "user", 
                 "content": [
-                    {"type": "text", "text": "Query Image (Look for this person):"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_query}"}},
+                    {"type": "text", "text": "Query Images (Look for this person, multiple angles provided):"},
+                    *query_content,
                     {"type": "text", "text": "Gallery Candidates:"},
                     *gallery_content,
-                    {"type": "text", "text": "Which index matches the Query Image? Think step by step."}
+                    {"type": "text", "text": "Which index matches the Query person? Think step by step."}
                 ]
             }
         ]
@@ -242,11 +272,17 @@ class QwenReIDAgent(BaseReIDAgent):
             dashscope.base_http_api_url = base_url
 
     @retry_on_exception(max_retries=3, delay=3)
-    def predict(self, query_path, gallery_paths):
-        content = [{"text": "Identify the person in Query Image from Gallery. Return ONLY the index number."}]
-        # Use file:// path for local images
-        content.append({"image": f"file://{os.path.abspath(query_path)}"})
-        content.append({"text": "Query Image is above. Gallery below:"})
+    def predict(self, query_paths, gallery_paths):
+        # 兼容多查询
+        if not isinstance(query_paths, list):
+            query_paths = [query_paths]
+
+        content = [{"text": "Identify the person in Query Images from Gallery. Return ONLY the index number."}]
+        for i, q_path in enumerate(query_paths):
+            content.append({"text": f"Query Image {i}:"})
+            content.append({"image": f"file://{os.path.abspath(q_path)}"})
+        
+        content.append({"text": "Gallery below:"})
 
         for i, path in enumerate(gallery_paths):
             content.append({"text": f"Index {i}:"})
@@ -275,13 +311,24 @@ class EvolutionaryReIDAgent(BaseReIDAgent):
     - Fireworks Policy for 'exploding' (variation) best prompts
     - Memory Management for guidance
     """
-    def __init__(self, api_key, model="gpt-4o", base_url=None):
+    def __init__(self, api_key, model="gpt-4o", base_url=None, backend="openai", use_memory=True):
         self.journal = Journal()
         self.memory = MemoryManager()
-        self.persistent_memory = ReIDMemoryModule()
+        
+        # 使用 MemoryPlugin 支持热插拔
+        workspace_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.persistent_memory = MemoryPlugin(enabled=use_memory, workspace_path=workspace_path)
+        
         self.api_key = api_key
         self.model = model
-        self.base_agent = OpenAIReIDAgent(api_key, model, base_url)
+        
+        # 根据 backend 选择基础 Agent
+        if backend == "langchain":
+            self.base_agent = LangChainReIDAgent(api_key, model, base_url)
+        elif backend == "qwen":
+            self.base_agent = QwenReIDAgent(api_key, model, base_url)
+        else:
+            self.base_agent = OpenAIReIDAgent(api_key, model, base_url)
         
         # Initial seed prompt
         initial_prompt = """Analyze clothing features (upper/lower/shoes) and match the Query to one Gallery index."""

@@ -39,36 +39,36 @@ class Market1501Dataset:
         camid = parts[1]
         return pid, camid
 
-    def get_test_case(self, gallery_size=10, mode="random"):
+    def get_test_case(self, gallery_size=10, query_size=1, mode="random"):
         """
         Returns a single test case:
-        - query_path: str
+        - query_paths: List[str]
         - gallery_paths: List[str] (contains at least one match)
         - ground_truth_idx: int (index of the match in gallery_paths)
         """
-        # 1. Pick a random query
-        query_path = random.choice(self.query_paths)
-        q_pid, q_camid = self._parse_filename(query_path)
+        # 1. Pick a query PID that has enough positive matches
+        all_pids = set(self._parse_filename(p)[0] for p in self.query_paths)
+        
+        # Simple sampling logic to support multi-query
+        random_query_pid = random.choice(list(all_pids))
+        
+        # Get all query images for this PID
+        query_pool = [p for p in self.query_paths if self._parse_filename(p)[0] == random_query_pid]
+        
+        # Sample query_size images
+        selected_query_paths = random.sample(query_pool, min(len(query_pool), query_size))
         
         # 2. Find positives in gallery
         gallery_full = [(p, *self._parse_filename(p)) for p in self.gallery_paths]
         
-        # Standard ReID protocol: match is same ID, different camera usually.
-        # But Market-1501 might allow same camera if time is different? 
-        # For simplicity in this LMM demo strict protocol:
-        # positive: same pid, different camid? Or just same pid?
-        # Market-1501 evaluation usually ignores "junk" (same ID, same camera). 
-        # But here we just want to find "same person". LMMs might be good at strict matches too.
-        # Let's simple filter: same pid is positive.
-        
-        positives = [p for (p, pid, cam) in gallery_full if pid == q_pid]
-        negatives = [p for (p, pid, cam) in gallery_full if pid != q_pid]
+        positives = [p for (p, pid, cam) in gallery_full if pid == random_query_pid]
+        negatives = [p for (p, pid, cam) in gallery_full if pid != random_query_pid]
         
         if not positives:
-            # Retry if no match found for this query (should differ rarely)
-            return self.get_test_case(gallery_size, mode)
+            # Retry if no match found for this query pid
+            return self.get_test_case(gallery_size, query_size, mode)
             
-        # 3. Sample
+        # 3. Sample gallery
         # Ensure we have at least one positive
         target_positive = random.choice(positives)
         
@@ -83,7 +83,4 @@ class Market1501Dataset:
         # Find index
         gt_idx = gallery_subset.index(target_positive)
         
-        # Check if there are accidental other positives in the negatives selection (unlikely if sampled from strict negatives)
-        # But if we just sampled from 'all', we'd need to check. here we sampled from 'negatives', so pid is diff.
-        
-        return query_path, gallery_subset, gt_idx
+        return selected_query_paths, gallery_subset, gt_idx
