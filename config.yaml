@@ -1,10 +1,10 @@
 api_key: sk-9284f91303e54701871507774f7ab452
-trials: 15
+trials: 50
 agent: "evo"
-gallery_size: 100
-query_size: 5
+gallery_size: 10
+query_size: 3
 data_dir: "/mnt/l/CV/data/1/Market-1501-v15.09.15"
 model: "qwen3.6-plus"
 base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 use_memory: true 
-report: report_gs100_query_size15.md
+report: report_gs10_query_size3_memoried.md

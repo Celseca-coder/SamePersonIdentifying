@@ -68,12 +68,20 @@ class MemoryPlugin:
             self._module.add_trial(prompt, is_correct, analysis)
 
     def summarize_to_long_term(
-        self, session_summary: str, best_prompt: str = None
+        self,
+        session_summary: str,
+        best_prompt: str = None,
+        accuracy: float = None,
+        success_threshold: float = 0.5,
     ) -> None:
-        """将 session 总结写入长时记忆，可选持久化最佳 Prompt。"""
+        """将 session 总结写入长时记忆。
+        accuracy >= success_threshold 归入成功经验，否则归入失败经验。"""
         if self.enabled and self._module:
             self._module.summarize_to_long_term(
-                session_summary, best_prompt=best_prompt
+                session_summary,
+                best_prompt=best_prompt,
+                accuracy=accuracy,
+                success_threshold=success_threshold,
             )
 
     def get_compressed_context(self) -> str:
@@ -81,3 +89,25 @@ class MemoryPlugin:
         if self.enabled and self._module:
             return self._module.get_compressed_context()
         return ""
+
+    def add_error_case(
+        self,
+        query_paths: list,
+        wrong_path: str,
+        correct_path: str,
+        thinking: str = ""
+    ) -> None:
+        """记录判错案例（FP wrong_path + FN correct_path + thinking）。"""
+        if self.enabled and self._module:
+            self._module.add_error_case(query_paths, wrong_path, correct_path, thinking)
+
+    def sample_reflection_cases(self):
+        """随机抽取 1 个 FP 和 1 个 FN 案例；未启用时返回 (None, None)。"""
+        if self.enabled and self._module:
+            return self._module.sample_reflection_cases()
+        return None, None
+
+    def add_reflection(self, fp_reflection: str = None, fn_reflection: str = None) -> None:
+        """将 reflector 生成的 Prompt 建议写入长时记忆。"""
+        if self.enabled and self._module:
+            self._module.add_reflection(fp_reflection, fn_reflection)
